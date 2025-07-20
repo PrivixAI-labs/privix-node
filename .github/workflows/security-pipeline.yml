@@ -1,0 +1,376 @@
+name: Security CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      deployment_environment:
+        description: 'Target deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+
+env:
+  GO_VERSION: '1.20'
+  DOCKER_REGISTRY: 'ghcr.io'
+  IMAGE_NAME: 'privixai-labs/privix-node'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  id-token: write # For OIDC authentication
+
+jobs:
+  # Security and compliance checks
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    outputs:
+      scan-results: ${{ steps.security-summary.outputs.results }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for security analysis
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+      - name: Run Gosec Security Scanner
+        uses: securecodewarrior/github-action-gosec@master
+        with:
+          args: '-fmt sarif -out gosec-results.sarif ./...'
+
+      - name: Run Nancy (dependency vulnerability scanner)
+        run: |
+          go install github.com/sonatypecommunity/nancy@latest
+          go list -json -deps ./... | nancy sleuth
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+            p/golang
+            p/docker
+          generate-sarif-file: semgrep-results.sarif
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload security scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: |
+            gosec-results.sarif
+            semgrep-results.sarif
+            trivy-results.sarif
+
+      - name: Security Summary
+        id: security-summary
+        run: |
+          echo "results={\"gosec\":\"$(wc -l < gosec-results.sarif)\",\"semgrep\":\"$(wc -l < semgrep-results.sarif)\",\"trivy\":\"$(wc -l < trivy-results.sarif)\"}" >> $GITHUB_OUTPUT
+
+  # Code quality and testing
+  quality-tests:
+    name: Quality & Testing
+    runs-on: ubuntu-latest
+    needs: [security-scan]
+    strategy:
+      matrix:
+        test-type: [unit, integration, consensus, crypto, network]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run tests by category
+        run: |
+          case "${{ matrix.test-type }}" in
+            unit)
+              go test -race -coverprofile=coverage.out ./...
+              ;;
+            integration)
+              go test -tags=integration ./e2e/...
+              ;;
+            consensus)
+              go test -v ./consensus/... ./validators/...
+              ;;
+            crypto)
+              go test -v ./crypto/... ./secrets/...
+              ;;
+            network)
+              go test -v ./network/... ./syncer/...
+              ;;
+          esac
+
+      - name: Upload coverage reports
+        if: matrix.test-type == 'unit'
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.out
+          flags: unittests
+
+  # License and dependency compliance
+  compliance-check:
+    name: License & Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check licenses
+        run: |
+          go install github.com/fossa-contrib/fossa-cli@latest
+          fossa analyze
+          fossa test
+
+      - name: Check for secrets in code
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+
+  # Build verification with reproducible builds
+  build-verification:
+    name: Build Verification
+    runs-on: ubuntu-latest
+    needs: [security-scan, quality-tests, compliance-check]
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      provenance-name: ${{ steps.provenance.outputs.provenance-name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build reproducible binary
+        run: |
+          # Enable reproducible builds
+          export CGO_ENABLED=0
+          export GOOS=linux
+          export GOARCH=amd64
+          
+          # Build with consistent flags
+          go build -ldflags="-s -w -X main.version=${{ github.sha }}" \
+                   -trimpath \
+                   -o privix-node \
+                   ./
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Generate SLSA provenance
+        id: provenance
+        uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.9.0
+        with:
+          base64-subjects: "${{ steps.build.outputs.digest }}"
+          
+      - name: Sign container image
+        uses: sigstore/cosign-installer@v3.1.1
+        with:
+          cosign-release: 'v2.1.1'
+      
+      - name: Sign the published Docker image
+        env:
+          TAGS: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+  # Deployment approval and staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-verification]
+    if: github.ref == 'refs/heads/develop' || github.event_name == 'workflow_dispatch'
+    environment: 
+      name: staging
+      url: https://staging.privix.node
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout infrastructure code
+        uses: actions/checkout@v4
+        with:
+          repository: PrivixAI-labs/privix-infrastructure
+          token: ${{ secrets.INFRA_REPO_TOKEN }}
+
+      - name: Configure AWS credentials (staging)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_ROLE_ARN }}
+          role-session-name: GitHubActions-Staging
+          aws-region: us-east-1
+
+      - name: Deploy to staging with Terraform
+        run: |
+          cd terraform/staging
+          terraform init
+          terraform plan -var="image_tag=${{ github.sha }}"
+          terraform apply -auto-approve -var="image_tag=${{ github.sha }}"
+
+  # Production deployment with enhanced security
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-verification, deploy-staging]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: 
+      name: production
+      url: https://mainnet.privix.node
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Manual approval checkpoint
+        uses: trstringer/manual-approval@v1
+        timeout-minutes: 60
+        with:
+          secret: ${{ secrets.MANUAL_APPROVAL_SECRET }}
+          approvers: ${{ secrets.PRODUCTION_APPROVERS }}
+          minimum-approvals: 2
+          issue-title: "Production Deployment Approval Required"
+          issue-body: |
+            **Production deployment requested for commit:** ${{ github.sha }}
+            
+            **Security scan results:** ${{ needs.security-scan.outputs.scan-results }}
+            
+            **Staging verification:** ✅ Completed
+            
+            **Required approvals:** 2 from production approvers
+            
+            Please review all security scans and staging tests before approving.
+
+      - name: Checkout infrastructure code
+        uses: actions/checkout@v4
+        with:
+          repository: PrivixAI-labs/privix-infrastructure
+          token: ${{ secrets.INFRA_REPO_TOKEN }}
+
+      - name: Configure AWS credentials (production)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PRODUCTION_ROLE_ARN }}
+          role-session-name: GitHubActions-Production
+          aws-region: us-east-1
+
+      - name: Deploy to production with Terraform
+        run: |
+          cd terraform/production
+          terraform init
+          terraform plan -var="image_tag=${{ github.sha }}"
+          terraform apply -auto-approve -var="image_tag=${{ github.sha }}"
+
+      - name: Verify deployment
+        run: |
+          # Health check and verification scripts
+          ./scripts/verify-production-deployment.sh
+
+      - name: Send deployment notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#production-deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+  # Audit logging to WORM storage
+  audit-logging:
+    name: Audit Logging
+    runs-on: ubuntu-latest
+    needs: [security-scan, quality-tests, compliance-check, build-verification]
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Collect audit data
+        run: |
+          cat << EOF > audit-log.json
+          {
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "commit_sha": "${{ github.sha }}",
+            "actor": "${{ github.actor }}",
+            "ref": "${{ github.ref }}",
+            "workflow": "${{ github.workflow }}",
+            "run_id": "${{ github.run_id }}",
+            "security_scan_status": "${{ needs.security-scan.result }}",
+            "quality_tests_status": "${{ needs.quality-tests.result }}",
+            "compliance_status": "${{ needs.compliance-check.result }}",
+            "build_status": "${{ needs.build-verification.result }}",
+            "security_results": ${{ needs.security-scan.outputs.scan-results || '{}' }},
+            "reviewers": "${{ github.event.pull_request.requested_reviewers }}",
+            "approvals": "${{ github.event.pull_request.reviews_url }}"
+          }
+          EOF
+
+      - name: Store audit log in WORM storage
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AUDIT_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AUDIT_AWS_SECRET_ACCESS_KEY }}
+        run: |
+          # Upload to S3 with object lock (WORM)
+          aws s3 cp audit-log.json \
+            s3://privix-audit-logs/ci-cd/$(date +%Y/%m/%d)/${{ github.run_id }}-audit.json \
+            --region us-east-1 \
+            --metadata "commit=${{ github.sha }},actor=${{ github.actor }},workflow=${{ github.workflow }}" 
