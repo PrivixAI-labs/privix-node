@@ -1,0 +1,80 @@
+# Branch Protection Rules Configuration
+# This file documents the required branch protection settings for GitHub
+
+main_branch_protection:
+  # Require pull request reviews before merging
+  required_status_checks:
+    strict: true
+    contexts:
+      - "continuous-integration"
+      - "security-scan"
+      - "consensus-tests" 
+      - "crypto-tests"
+      - "network-tests"
+      - "build-verification"
+      - "license-check"
+      - "dependency-check"
+
+  # Enforce reviewers
+  required_pull_request_reviews:
+    required_approving_review_count: 2
+    dismiss_stale_reviews: true
+    require_code_owner_reviews: true
+    require_last_push_approval: true
+    bypass_pull_request_allowances: []
+
+  # Additional protections  
+  enforce_admins: true
+  allow_force_pushes: false
+  allow_deletions: false
+  required_linear_history: true
+
+  # Required commit signing
+  required_signatures: true
+
+  # Restrict pushes that create files
+  restrict_pushes: true
+
+# Production branch additional restrictions
+production_branch_protection:
+  # All main branch rules plus:
+  required_pull_request_reviews:
+    required_approving_review_count: 3  # Higher threshold for production
+    
+  additional_status_checks:
+    - "security-penetration-test"
+    - "performance-benchmark"
+    - "integration-test-full"
+    - "smart-contract-audit"
+
+# Critical paths requiring additional approvals
+critical_path_rules:
+  consensus_crypto_networking:
+    paths:
+      - "consensus/**"
+      - "crypto/**" 
+      - "secrets/**"
+      - "network/**"
+      - "validators/**"
+    minimum_reviewers: 3
+    required_teams:
+      - "security-team"
+      - "lead-architect"
+    additional_checks:
+      - "formal-verification"
+      - "code-audit"
+      - "security-review"
+
+  production_deployment:
+    paths:
+      - ".github/workflows/deploy-*.yml"
+      - "scripts/deploy-*"
+      - "*.dockerfile"
+      - "docker-compose*.yml"
+    minimum_reviewers: 2
+    required_teams:
+      - "devops-team"
+      - "security-team"
+    additional_checks:
+      - "infrastructure-security-scan"
+      - "deployment-approval" 
