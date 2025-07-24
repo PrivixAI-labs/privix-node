@@ -190,11 +190,12 @@ jobs:
           echo "📄 Compliance report generated"
 
       - name: Upload compliance report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: signature-compliance-report
           path: signature-compliance-report.md
           retention-days: 90
+          include-hidden-files: true
 
   enforce-signed-commits-policy:
     name: Enforce Signed Commits Policy
@@ -228,12 +229,21 @@ jobs:
     needs: [verify-commit-signatures, enforce-signed-commits-policy]
     if: failure()
     steps:
+      - name: Check Slack webhook configuration
+        run: |
+          if [ -z "${{ secrets.SECURITY_SLACK_WEBHOOK }}" ]; then
+            echo "❌ Error: SLACK_WEBHOOK_URL secret is not set."
+            echo "Please configure the SLACK_WEBHOOK_URL secret in GitHub repository settings."
+            exit 1
+          fi
+          echo "✅ SLACK_WEBHOOK_URL secret is configured."
+
       - name: Notify security team of policy violation
         uses: 8398a7/action-slack@v3
         with:
           status: failure
           channel: '#security-alerts'
-          webhook_url: ${{ secrets.SECURITY_SLACK_WEBHOOK }}
+          webhook-url: ${{ secrets.SECURITY_SLACK_WEBHOOK }}
           fields: repo,message,commit,author,action,eventName,ref,workflow
           custom_payload: |
             {
@@ -279,7 +289,7 @@ jobs:
             }
 
       - name: Create security incident issue
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -364,8 +374,9 @@ jobs:
           echo "📤 Audit entry would be sent to WORM logging system"
 
       - name: Store audit evidence
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: commit-verification-audit-${{ github.run_id }}
           path: audit-entry.json
-          retention-days: 2555 # 7 years retention 
+          retention-days: 2555 # 7 years retention
+          include-hidden-files: true
