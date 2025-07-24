@@ -36,7 +36,6 @@
 /*.yaml @PrivixAI @innbuld
 /*.json @PrivixAI @innbuld
 
-
 # Genesis and chain configuration
 /genesis/ @PrivixAI @innbuld
 /chain/ @PrivixAI @innbuld
