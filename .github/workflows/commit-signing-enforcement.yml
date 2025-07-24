@@ -72,7 +72,7 @@ jobs:
               INVALID_SIGNATURES+=("$commit")
               
             else
-              echo "⚠️  Unsigned commit detected: $commit"
+              echo "⚠️ Unsigned commit detected: $commit"
               UNSIGNED_COMMITS+=("$commit")
             fi
             
@@ -138,16 +138,19 @@ jobs:
           echo "$SIGNING_KEYS"
           
           # Check each key's trust level and validity
+          if [ -z "$SIGNING_KEYS" ]; then
+            echo "⚠️ No signing keys found in recent commits."
+            exit 1
+          fi
+          
           for key_id in $SIGNING_KEYS; do
-            if [ -n "$key_id" ]; then
-              echo ""
-              echo "🔑 Checking key: $key_id"
-              
-              # Import public key if not already present (for verification)
-              # In production, you'd maintain a keyring of authorized signers
-              echo "   📥 Key details would be verified against authorized keyring"
-              echo "   ✅ Key validation passed (simulated)"
-            fi
+            echo ""
+            echo "🔑 Checking key: $key_id"
+            
+            # In production, verify against an authorized keyring
+            # Example: gpg --import authorized_keys.gpg && gpg --list-key $key_id
+            echo "   📥 Key details would be verified against authorized keyring"
+            echo "   ✅ Key validation passed (simulated)"
           done
 
       - name: Generate signature compliance report
@@ -190,11 +193,12 @@ jobs:
           echo "📄 Compliance report generated"
 
       - name: Upload compliance report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: signature-compliance-report
           path: signature-compliance-report.md
           retention-days: 90
+          include-hidden-files: true
 
   enforce-signed-commits-policy:
     name: Enforce Signed Commits Policy
@@ -215,7 +219,7 @@ jobs:
             echo "2. Contact the commit author to fix unsigned commits"
             echo "3. Verify the signing keys are authorized"
             echo ""
-            echo "📞 For assistance, contact the security team"
+            echo "📞 For assistance, contact @PrivixAI or @innbuld"
             
             exit 1
           else
@@ -228,12 +232,21 @@ jobs:
     needs: [verify-commit-signatures, enforce-signed-commits-policy]
     if: failure()
     steps:
+      - name: Check Slack webhook configuration
+        run: |
+          if [ -z "${{ secrets.SECURITY_SLACK_WEBHOOK }}" ]; then
+            echo "❌ Error: SECURITY_SLACK_WEBHOOK secret is not set."
+            echo "Please configure the SECURITY_SLACK_WEBHOOK secret in GitHub repository settings."
+            exit 1
+          fi
+          echo "✅ SECURITY_SLACK_WEBHOOK secret is configured."
+
       - name: Notify security team of policy violation
         uses: 8398a7/action-slack@v3
         with:
           status: failure
           channel: '#security-alerts'
-          webhook_url: ${{ secrets.SECURITY_SLACK_WEBHOOK }}
+          webhook-url: ${{ secrets.SECURITY_SLACK_WEBHOOK }}
           fields: repo,message,commit,author,action,eventName,ref,workflow
           custom_payload: |
             {
@@ -272,14 +285,14 @@ jobs:
                     "short": true
                   }
                 ],
-                "text": "Unsigned or invalid commit signatures detected. Immediate review required.",
+                "text": "Unsigned or invalid commit signatures detected. Contact @PrivixAI or @innbuld for immediate review.",
                 "footer": "Privix Security Enforcement",
                 "ts": ${{ github.event.repository.created_at }}
               }]
             }
 
       - name: Create security incident issue
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -309,7 +322,7 @@ jobs:
             2. [ ] Verify commit author identity
             3. [ ] Ensure proper GPG key configuration
             4. [ ] Re-sign affected commits
-            5. [ ] Security team review and approval
+            5. [ ] Review and approval by @PrivixAI or @innbuld
             
             ### Security Notes
             
@@ -320,12 +333,12 @@ jobs:
             
             ### Assigned
             
-            @security-team @devops-team
+            @PrivixAI @innbuld
             
             /cc @${{ github.actor }}
               `,
               labels: ['security', 'policy-violation', 'high-priority', 'commit-signing'],
-              assignees: ['security-team']
+              assignees: ['PrivixAI', 'innbuld']
             });
             
             console.log(`Created security incident issue #${issue.data.number}`);
@@ -364,8 +377,9 @@ jobs:
           echo "📤 Audit entry would be sent to WORM logging system"
 
       - name: Store audit evidence
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: commit-verification-audit-${{ github.run_id }}
           path: audit-entry.json
-          retention-days: 2555 # 7 years retention 
+          retention-days: 2555 # 7 years retention
+          include-hidden-files: true

@@ -1,44 +1,44 @@
-# Global owners for all files
-* @privix-security-team
+# Global owners for all files in the initial stage
+* @PrivixAI @innbuld
 
-# Critical consensus code requires consensus team approval
-/consensus/ @consensus-team @security-team
-/consensus/pri-bft/ @consensus-team @security-team @lead-architect
+# Critical consensus code
+/consensus/ @PrivixAI @innbuld
+/consensus/pri-bft/ @PrivixAI @innbuld
 
-# Cryptographic code requires crypto team approval  
-/crypto/ @crypto-team @security-team @lead-architect
-/secrets/ @crypto-team @security-team @lead-architect
+# Cryptographic code
+/crypto/ @PrivixAI @innbuld
+/secrets/ @PrivixAI @innbuld
 
-# Networking code requires network team approval
-/network/ @network-team @security-team
-/syncer/ @network-team @security-team
+# Networking code
+/network/ @PrivixAI @innbuld
+/syncer/ @PrivixAI @innbuld
 
-# Validator and key management requires highest security
-/validators/ @crypto-team @consensus-team @security-team @lead-architect
-/consensus/pri-bft/signer/ @crypto-team @security-team @lead-architect
+# Validator and key management
+/validators/ @PrivixAI @innbuld
+/consensus/pri-bft/signer/ @PrivixAI @innbuld
 
-# State and execution engine critical for consensus
-/state/ @consensus-team @security-team
-/blockchain/ @consensus-team @security-team
+# State and execution engine
+/state/ @PrivixAI @innbuld
+/blockchain/ @PrivixAI @innbuld
 
 # Command line interfaces and configuration
-/command/ @dev-team @security-team
-/server/ @dev-team @security-team
+/command/ @PrivixAI @innbuld
+/server/ @PrivixAI @innbuld
 
 # CI/CD and infrastructure
-/.github/ @devops-team @security-team @lead-architect
-/scripts/ @devops-team @security-team
-/Dockerfile @devops-team @security-team
+/.github/ @PrivixAI @innbuld
+/scripts/ @PrivixAI @innbuld
+/Dockerfile @PrivixAI @innbuld
 
 # Documentation and configuration
-/*.md @dev-team @security-team
-/*.yml @devops-team @security-team
-/*.yaml @devops-team @security-team
-/*.json @dev-team @security-team
+/*.md @PrivixAI @innbuld
+/*.yml @PrivixAI @innbuld
+/*.yaml @PrivixAI @innbuld
+/*.json @PrivixAI @innbuld
 
 # Genesis and chain configuration
-/genesis/ @consensus-team @security-team @lead-architect
-/chain/ @consensus-team @security-team @lead-architect
+/genesis/ @PrivixAI @innbuld
+/chain/ @PrivixAI @innbuld
 
 # Transaction pool and mempool
-/txpool/ @consensus-team @dev-team @security-team 
+/txpool/ @PrivixAI @innbuld
