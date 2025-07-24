@@ -1,11 +1,11 @@
-# Global owners for all files
-* @privix-security-team
+# Global owners for all files in the initial stage
+* @PrivixAI @innbuld
 
 # Critical consensus code requires consensus team approval
 /consensus/ @consensus-team @security-team
 /consensus/pri-bft/ @consensus-team @security-team @lead-architect
 
-# Cryptographic code requires crypto team approval  
+# Cryptographic code requires crypto team approval
 /crypto/ @crypto-team @security-team @lead-architect
 /secrets/ @crypto-team @security-team @lead-architect
 
@@ -41,4 +41,4 @@
 /chain/ @consensus-team @security-team @lead-architect
 
 # Transaction pool and mempool
-/txpool/ @consensus-team @dev-team @security-team 
+/txpool/ @consensus-team @dev-team @security-team
