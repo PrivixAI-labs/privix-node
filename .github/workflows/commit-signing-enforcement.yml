@@ -8,6 +8,7 @@ on:
 
 env:
   REQUIRED_SIGNATURE_TYPE: "gpg" # or "ssh"
+  ENABLE_GPG_DATE: "2025-07-25" # Date when GPG signing was enabled (YYYY-MM-DD)
 
 jobs:
   verify-commit-signatures:
@@ -42,13 +43,24 @@ jobs:
           
           echo "📋 Checking commit range: $COMMIT_RANGE"
           
-          # Verify each commit
+          # Verify each commit made on or after ENABLE_GPG_DATE
           UNSIGNED_COMMITS=()
           INVALID_SIGNATURES=()
           VALID_SIGNATURES=0
           
           while IFS= read -r commit; do
             if [ -z "$commit" ]; then
+              continue
+            fi
+            
+            # Get commit date
+            COMMIT_DATE=$(git log --format="%cd" --date=iso -n 1 "$commit")
+            COMMIT_DATE_SECONDS=$(date -d "$COMMIT_DATE" +%s)
+            ENABLE_GPG_DATE_SECONDS=$(date -d "${{ env.ENABLE_GPG_DATE }}" +%s)
+            
+            # Skip commits before ENABLE_GPG_DATE
+            if [ "$COMMIT_DATE_SECONDS" -lt "$ENABLE_GPG_DATE_SECONDS" ]; then
+              echo "⏭️  Skipping commit $commit (older than ${{ env.ENABLE_GPG_DATE }})"
               continue
             fi
             
@@ -132,7 +144,7 @@ jobs:
           echo "🔍 Verifying GPG key trust levels..."
           
           # Extract all signing keys from recent commits
-          SIGNING_KEYS=$(git log --format="%GK" -n 50 | sort -u | grep -v "^$")
+          SIGNING_KEYS=$(git log --format="%GK" -n 50 --since="${{ env.ENABLE_GPG_DATE }}" | sort -u | grep -v "^$")
           
           echo "📋 Found signing keys:"
           echo "$SIGNING_KEYS"
@@ -143,8 +155,7 @@ jobs:
               echo ""
               echo "🔑 Checking key: $key_id"
               
-              # Import public key if not already present (for verification)
-              # In production, you'd maintain a keyring of authorized signers
+              # Import public key if not already present
               echo "   📥 Key details would be verified against authorized keyring"
               echo "   ✅ Key validation passed (simulated)"
             fi
@@ -166,7 +177,7 @@ jobs:
           
           ## Summary
           
-          All commits in this push/PR have been verified for proper GPG signatures.
+          All commits in this push/PR made on or after ${{ env.ENABLE_GPG_DATE }} have been verified for proper GPG signatures.
           
           ## Verification Details
           
@@ -176,7 +187,7 @@ jobs:
           
           ## Security Notes
           
-          - All commits are cryptographically signed
+          - All commits after ${{ env.ENABLE_GPG_DATE }} are cryptographically signed
           - Signatures verified against known public keys
           - No unsigned or tampered commits detected
           
@@ -190,11 +201,12 @@ jobs:
           echo "📄 Compliance report generated"
 
       - name: Upload compliance report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: signature-compliance-report
           path: signature-compliance-report.md
           retention-days: 90
+          include-hidden-files: true
 
   enforce-signed-commits-policy:
     name: Enforce Signed Commits Policy
@@ -208,7 +220,7 @@ jobs:
             echo "❌ Commit signature verification failed"
             echo ""
             echo "🚨 POLICY VIOLATION DETECTED"
-            echo "All commits must be signed with a valid GPG key"
+            echo "All commits after ${{ env.ENABLE_GPG_DATE }} must be signed with a valid GPG key"
             echo ""
             echo "📋 IMMEDIATE ACTIONS REQUIRED:"
             echo "1. Do not merge this PR until all commits are signed"
@@ -228,12 +240,21 @@ jobs:
     needs: [verify-commit-signatures, enforce-signed-commits-policy]
     if: failure()
     steps:
+      - name: Check Slack webhook configuration
+        run: |
+          if [ -z "${{ secrets.SECURITY_SLACK_WEBHOOK }}" ]; then
+            echo "❌ Error: SLACK_WEBHOOK_URL secret is not set."
+            echo "Please configure the SLACK_WEBHOOK_URL secret in GitHub repository settings."
+            exit 1
+          fi
+          echo "✅ SLACK_WEBHOOK_URL secret is configured."
+
       - name: Notify security team of policy violation
         uses: 8398a7/action-slack@v3
         with:
           status: failure
           channel: '#security-alerts'
-          webhook_url: ${{ secrets.SECURITY_SLACK_WEBHOOK }}
+          webhook-url: ${{ secrets.SECURITY_SLACK_WEBHOOK }}
           fields: repo,message,commit,author,action,eventName,ref,workflow
           custom_payload: |
             {
@@ -272,14 +293,14 @@ jobs:
                     "short": true
                   }
                 ],
-                "text": "Unsigned or invalid commit signatures detected. Immediate review required.",
+                "text": "Unsigned or invalid commit signatures detected after ${{ env.ENABLE_GPG_DATE }}. Immediate review required.",
                 "footer": "Privix Security Enforcement",
                 "ts": ${{ github.event.repository.created_at }}
               }]
             }
 
       - name: Create security incident issue
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -305,7 +326,7 @@ jobs:
             
             ### Required Actions
             
-            1. [ ] Investigate unsigned/invalid commits
+            1. [ ] Investigate unsigned/invalid commits after ${{ env.ENABLE_GPG_DATE }}
             2. [ ] Verify commit author identity
             3. [ ] Ensure proper GPG key configuration
             4. [ ] Re-sign affected commits
@@ -313,7 +334,7 @@ jobs:
             
             ### Security Notes
             
-            This violation indicates that commits were made without proper cryptographic signatures,
+            This violation indicates that commits made after ${{ env.ENABLE_GPG_DATE }} were made without proper cryptographic signatures,
             which compromises our supply chain security and audit trail integrity.
             
             **Do not merge this PR until all commits are properly signed and verified.**
@@ -353,7 +374,8 @@ jobs:
             "workflow_run": "${{ github.run_id }}",
             "event_name": "${{ github.event_name }}",
             "compliance_status": "${{ needs.verify-commit-signatures.result == 'success' && 'COMPLIANT' || 'NON_COMPLIANT' }}",
-            "security_impact": "${{ needs.verify-commit-signatures.result == 'success' && 'NONE' || 'HIGH' }}"
+            "security_impact": "${{ needs.verify-commit-signatures.result == 'success' && 'NONE' || 'HIGH' }}",
+            "gpg_enforcement_start_date": "${{ env.ENABLE_GPG_DATE }}"
           }
           EOF
           
@@ -364,8 +386,9 @@ jobs:
           echo "📤 Audit entry would be sent to WORM logging system"
 
       - name: Store audit evidence
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: commit-verification-audit-${{ github.run_id }}
           path: audit-entry.json
-          retention-days: 2555 # 7 years retention 
+          retention-days: 2555 # 7 years retention
+          include-hidden-files: true
